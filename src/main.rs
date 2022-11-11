@@ -1,8 +1,5 @@
-use secp256k1_math::{
-    point::{
-	Point,
-    },
-    scalar::Scalar,
+use curve25519_dalek::{
+    ristretto::RistrettoPoint as Point, scalar::Scalar,
 };
 use num_traits::identities::Zero;
 use polynomial::Polynomial;
@@ -21,11 +18,11 @@ use frost::{
 };
 
 fn eval(p: &Polynomial<Point>, x: &Scalar) -> Point {
-    let mut y = x.clone();
-    let mut val = p.data()[0].clone();
+    let mut y = *x;
+    let mut val = p.data()[0];
 
     for i in 1..p.data().len() {
-	val += &p.data()[i] * &y;
+	val += p.data()[i] * y;
 	y *= y;
     }
 
@@ -39,7 +36,7 @@ fn main() {
     const N: usize = 3;
     const T: usize = 2;
 
-    let mut parties: Vec<Party> = (0..N).map(|n| Party::new(&Scalar::from((n+1) as u32), T, &mut rng)).collect();
+    let mut parties: Vec<Party> = (0..N).map(|n| Party::new(&Scalar::from((n+1) as u64), T, &mut rng)).collect();
     let shares: Vec<Share> = parties.iter().map(|p| p.share(&mut rng)).collect();
 
     // everybody checks everybody's shares
@@ -48,9 +45,12 @@ fn main() {
     }
     
     let mut agg_params = Vec::new();
-    for share in &shares {
-	let agg = (0..T).fold(Point::default(), |acc,x| acc + &share.A[x]);
-	agg_params.push(agg);
+    for i in 0..T {
+        let mut agg = Point::default();
+        for share in &shares {
+            agg +=  share.A[i];
+        }
+        agg_params.push(agg);
     }
     let P: Polynomial<Point> = Polynomial::new(agg_params);
 
@@ -63,7 +63,7 @@ fn main() {
     
     let mut X = Point::zero();
     for share in &shares {
-	X = X + &share.A[0];
+	X = X + share.A[0];
     }
 
     println!("Aggregate public key X = {}", X);
