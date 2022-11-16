@@ -140,7 +140,7 @@ impl Party {
     }
 
     #[allow(non_snake_case)]
-    pub fn sign(&self, X: &Point, rho: &Scalar, R: &Point, msg: &String, l: &Scalar) -> Scalar {
+    pub fn sign(&self, X: &Point, rho: &Scalar, R: &Point, msg: &String, lambda: &Scalar) -> Scalar {
         let nonce = self.nonces.last().unwrap();
         let mut z = &nonce.d + rho * &nonce.e;
 
@@ -150,7 +150,7 @@ impl Party {
         hasher.update(R.compress().as_bytes());
         hasher.update(msg.as_bytes());
 
-        z += hash_to_scalar(&mut hasher) * &self.secret * l;
+        z += hash_to_scalar(&mut hasher) * &self.secret * lambda;
 
         z
     }
@@ -196,8 +196,8 @@ impl Signature {
 
         let mut z = Scalar::zero();
         for (i, party) in parties.iter().enumerate() {
-            let l = Party::lambda(&party.id, parties);
-            z += party.sign(&X, &rho[i], &R, &msg, &l);
+            let lambda = Party::lambda(&party.id, parties);
+            z += party.sign(&X, &rho[i], &R, &msg, &lambda);
         }
 
         Self { R: R, z: z }
