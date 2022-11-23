@@ -52,12 +52,14 @@ impl PublicNonce {
 }
 
 #[derive(Clone)]
+#[allow(non_snake_case)]
 pub struct Party {
     pub id: Scalar,
     pub f: Polynomial<Scalar>,
     pub shares: Vec<Share2>,
     pub secret: Scalar,
     pub nonces: Vec<Nonce>,
+    pub Y: Point,
 }
 
 impl Party {
@@ -68,6 +70,7 @@ impl Party {
             shares: Vec::new(),
             secret: Scalar::zero(),
             nonces: Vec::new(),
+            Y: Point::zero(),
         }
     }
 
@@ -88,6 +91,8 @@ impl Party {
         for share in &self.shares {
             self.secret += &share.f_i;
         }
+
+        self.Y = self.secret * G;
     }
 
     pub fn gen_nonces<RNG: RngCore + CryptoRng>(&mut self, rng: &mut RNG) {
@@ -140,17 +145,17 @@ impl Party {
     }
 
     #[allow(non_snake_case)]
-    pub fn sign(&self, X: &Point, rho: &Scalar, R: &Point, msg: &String, lambda: &Scalar) -> Scalar {
+    pub fn sign(
+        &self,
+        X: &Point,
+        rho: &Scalar,
+        R: &Point,
+        msg: &String,
+        lambda: &Scalar,
+    ) -> Scalar {
         let nonce = self.nonces.last().unwrap();
-        let mut z = &nonce.d + rho * &nonce.e;
-
-        let mut hasher = Sha3_256::new();
-
-        hasher.update(X.compress().as_bytes());
-        hasher.update(R.compress().as_bytes());
-        hasher.update(msg.as_bytes());
-
-        z += hash_to_scalar(&mut hasher) * &self.secret * lambda;
+        let c = Self::challenge(X, R, msg);
+        let z = &nonce.d + rho * &nonce.e + c * lambda * &self.secret;
 
         z
     }
@@ -165,6 +170,17 @@ impl Party {
         }
 
         l
+    }
+
+    #[allow(non_snake_case)]
+    pub fn challenge(X: &Point, R: &Point, msg: &String) -> Scalar {
+        let mut hasher = Sha3_256::new();
+
+        hasher.update(X.compress().as_bytes());
+        hasher.update(R.compress().as_bytes());
+        hasher.update(msg.as_bytes());
+
+        hash_to_scalar(&mut hasher)
     }
 }
 
@@ -197,22 +213,39 @@ impl Signature {
         let mut z = Scalar::zero();
         for (i, party) in parties.iter().enumerate() {
             let lambda = Party::lambda(&party.id, parties);
-            z += party.sign(&X, &rho[i], &R, &msg, &lambda);
+            let z_i = party.sign(&X, &rho[i], &R, &msg, &lambda);
+
+            // verify each z_i to identify malicious byzantine actors
+            assert!(Self::verify_party_signature(
+                &z_i, &B[i], &X, &rho[i], &R, &msg, &lambda, &party.Y
+            ));
+
+            z += z_i;
         }
 
         Self { R: R, z: z }
     }
 
+    #[allow(non_snake_case)]
+    pub fn verify_party_signature(
+        z: &Scalar,
+        nonce: &PublicNonce,
+        X: &Point,
+        rho: &Scalar,
+        R: &Point,
+        msg: &String,
+        lambda: &Scalar,
+        Y: &Point,
+    ) -> bool {
+        let c = Party::challenge(X, R, msg);
+
+        z * G == (nonce.D + rho * nonce.E + (c * lambda * Y))
+    }
+
     // verify: R' = z * G + -c * X, pass if R' == R
     #[allow(non_snake_case)]
     pub fn verify(&self, X: &Point, msg: &String) -> bool {
-        let mut hasher = Sha3_256::new();
-
-        hasher.update(X.compress().as_bytes());
-        hasher.update(self.R.compress().as_bytes());
-        hasher.update(msg.as_bytes());
-
-        let c = hash_to_scalar(&mut hasher);
+        let c = Party::challenge(X, &self.R, msg);
         let R = &self.z * G + (-c) * X;
 
         println!("Verification R = {}", R);
