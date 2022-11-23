@@ -14,12 +14,12 @@ use crate::vss::VSS;
 #[allow(non_snake_case)]
 pub struct Share {
     pub id: ID,
-    pub A: Vec<Point>,
+    pub phi: Vec<Point>,
 }
 
 impl Share {
     pub fn verify(&self) -> bool {
-        self.id.verify(&self.A[0])
+        self.id.verify(&self.phi[0])
     }
 }
 
@@ -77,7 +77,7 @@ impl Party {
     pub fn share<RNG: RngCore + CryptoRng>(&self, rng: &mut RNG) -> Share {
         Share {
             id: ID::new(&self.id, &self.f.data()[0], rng),
-            A: (0..self.f.data().len())
+            phi: (0..self.f.data().len())
                 .map(|i| &self.f.data()[i] * G)
                 .collect(),
         }
@@ -147,14 +147,14 @@ impl Party {
     #[allow(non_snake_case)]
     pub fn sign(
         &self,
-        X: &Point,
+        Y: &Point,
         rho: &Scalar,
         R: &Point,
         msg: &String,
         lambda: &Scalar,
     ) -> Scalar {
         let nonce = self.nonces.last().unwrap();
-        let c = Self::challenge(X, R, msg);
+        let c = Self::challenge(Y, R, msg);
         let z = &nonce.d + rho * &nonce.e + c * lambda * &self.secret;
 
         z
@@ -173,10 +173,10 @@ impl Party {
     }
 
     #[allow(non_snake_case)]
-    pub fn challenge(X: &Point, R: &Point, msg: &String) -> Scalar {
+    pub fn challenge(Y: &Point, R: &Point, msg: &String) -> Scalar {
         let mut hasher = Sha3_256::new();
 
-        hasher.update(X.compress().as_bytes());
+        hasher.update(Y.compress().as_bytes());
         hasher.update(R.compress().as_bytes());
         hasher.update(msg.as_bytes());
 
@@ -193,7 +193,7 @@ pub struct Signature {
 impl Signature {
     #[allow(non_snake_case)]
     pub fn new<RNG: RngCore + CryptoRng>(
-        X: &Point,
+        Y: &Point,
         msg: &String,
         parties: &mut Vec<Party>,
         rng: &mut RNG,
@@ -213,11 +213,11 @@ impl Signature {
         let mut z = Scalar::zero();
         for (i, party) in parties.iter().enumerate() {
             let lambda = Party::lambda(&party.id, parties);
-            let z_i = party.sign(&X, &rho[i], &R, &msg, &lambda);
+            let z_i = party.sign(&Y, &rho[i], &R, &msg, &lambda);
 
             // verify each z_i to identify malicious byzantine actors
             assert!(Self::verify_party_signature(
-                &z_i, &B[i], &X, &rho[i], &R, &msg, &lambda, &party.Y
+                &z_i, &B[i], &Y, &rho[i], &R, &msg, &lambda, &party.Y
             ));
 
             z += z_i;
@@ -230,25 +230,25 @@ impl Signature {
     pub fn verify_party_signature(
         z: &Scalar,
         nonce: &PublicNonce,
-        X: &Point,
+        Y: &Point,
         rho: &Scalar,
         R: &Point,
         msg: &String,
         lambda: &Scalar,
-        Y: &Point,
+        Yi: &Point,
     ) -> bool {
-        let c = Party::challenge(X, R, msg);
+        let c = Party::challenge(Y, R, msg);
 
-        z * G == (nonce.D + rho * nonce.E + (c * lambda * Y))
+        z * G == (nonce.D + rho * nonce.E + (c * lambda * Yi))
     }
 
-    // verify: R' = z * G + -c * X, pass if R' == R
+    // verify: R' = z * G + -c * Y, pass if R' == R
     #[allow(non_snake_case)]
-    pub fn verify(&self, X: &Point, msg: &String) -> bool {
-        let c = Party::challenge(X, &self.R, msg);
-        let R = &self.z * G + (-c) * X;
+    pub fn verify(&self, Y: &Point, msg: &String) -> bool {
+        let c = Party::challenge(Y, &self.R, msg);
+        let R = &self.z * G + (-c) * Y;
 
-        println!("Verification R = {}", R);
+        println!("Verification R = \n{}", R);
         R == self.R
     }
 }

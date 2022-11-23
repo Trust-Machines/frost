@@ -2,7 +2,7 @@ use num_traits::identities::Zero;
 use polynomial::Polynomial;
 use rand_core::{OsRng, RngCore};
 use secp256k1_math::{point::Point, scalar::Scalar};
-use std::env;
+use std::{env, time};
 
 mod frost;
 mod schnorr;
@@ -25,10 +25,19 @@ fn eval(p: &Polynomial<Point>, x: &Scalar) -> Point {
 
 #[allow(non_snake_case)]
 fn main() {
-    let _args: Vec<String> = env::args().collect();
+    let args: Vec<String> = env::args().collect();
     let mut rng = OsRng::default();
-    const N: usize = 3;
-    const T: usize = 2;
+    let N: usize = if args.len() > 1 {
+	args[1].parse::<usize>().unwrap()
+    } else {
+	3
+    };
+
+    let T: usize = if args.len() > 2 {
+	args[2].parse::<usize>().unwrap()
+    } else {
+	(N * 2) / 3
+    };
 
     let mut parties: Vec<Party> = (0..N)
         .map(|n| Party::new(&Scalar::from((n + 1) as u32), T, &mut rng))
@@ -44,7 +53,7 @@ fn main() {
     for i in 0..T {
         let mut agg = Point::default();
         for share in &shares {
-            agg += share.A[i];
+            agg += share.phi[i];
         }
         agg_params.push(agg);
     }
@@ -53,17 +62,19 @@ fn main() {
     let zero = eval(&P, &Scalar::zero());
 
     //let p = Polynomial::<Scalar>::lagrange(&xs, &ys).unwrap();
-    println!("P(0) = {}", zero);
+    //println!("P(0) = {}", zero);
 
-    // compute aggregate public key X
+    // compute aggregate public key Y
 
-    let mut X = Point::zero();
+    let mut Y = Point::zero();
     for share in &shares {
-        X = X + &share.A[0];
+        Y = Y + &share.phi[0];
     }
 
-    println!("Aggregate public key X = {}", X);
+    println!("Aggregate public key Y = {}", Y);
 
+    assert_eq!(zero, Y);
+    
     // round2
     for i in 0..N {
         let party = parties[i].clone();
@@ -80,7 +91,7 @@ fn main() {
 
     for party in &mut parties {
         party.compute_secret();
-        println!("Party {} secret {}", &party.id, &party.secret);
+        //println!("Party {} secret {}", &party.id, &party.secret);
     }
 
     // choose a random list of T parties to sign
@@ -94,18 +105,18 @@ fn main() {
 
     let msg = "It was many and many a year ago".to_string();
 
-    let S: Vec<Scalar> = signing_parties.iter().map(|p| p.id).collect();
-    let mut signers = "".to_string();
-    for s in S {
-        signers += &format!("{} ", s);
-    }
-
-    println!("Signing parties {}", signers);
+    let _S: Vec<Scalar> = signing_parties.iter().map(|p| p.id).collect();
 
     //let B: Vec<PublicNonce> = signing_parties.iter().map(|p:&mut Party| p.pop_nonce(&mut rng)).collect();
 
-    let sig = Signature::new(&X, &msg, &mut signing_parties, &mut rng);
-    println!("Signature (R,z) = \n({},{})", sig.R, sig.z);
+    let sig_start = time::Instant::now();
+    let sig = Signature::new(&Y, &msg, &mut signing_parties, &mut rng);
+    let sig_time = sig_start.elapsed();
+    println!("Signing took {}us", sig_time.as_micros());
+    println!("Signature R,z = \n{},{}", sig.R, sig.z);
 
-    assert!(sig.verify(&X, &msg));
+    let ver_start = time::Instant::now();
+    assert!(sig.verify(&Y, &msg));
+    let ver_time = ver_start.elapsed();
+    println!("Verifying took {}us", ver_time.as_micros());
 }
