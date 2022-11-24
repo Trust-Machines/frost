@@ -1,3 +1,4 @@
+use polynomial::Polynomial;
 use secp256k1_math::{point::Compressed, point::Point, scalar::Scalar};
 use sha3::{Digest, Sha3_256};
 
@@ -35,4 +36,16 @@ pub fn encode_scalar(s: &Scalar) -> String {
 #[allow(dead_code)]
 pub fn encode_point(p: &Point) -> String {
     hex::encode(p.compress().as_bytes())
+}
+
+pub fn eval(p: &Polynomial<Point>, x: &Scalar) -> Point {
+    let mut y = x.clone();
+    let mut val = p.data()[0].clone();
+
+    for i in 1..p.data().len() {
+        val += &p.data()[i] * &y;
+        y *= y;
+    }
+
+    val
 }

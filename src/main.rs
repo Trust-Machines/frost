@@ -11,18 +11,6 @@ mod vss;
 
 use frost::{Party, Share, Share2, Signature};
 
-fn eval(p: &Polynomial<Point>, x: &Scalar) -> Point {
-    let mut y = x.clone();
-    let mut val = p.data()[0].clone();
-
-    for i in 1..p.data().len() {
-        val += &p.data()[i] * &y;
-        y *= y;
-    }
-
-    val
-}
-
 #[allow(non_snake_case)]
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -59,7 +47,7 @@ fn main() {
     }
     let P: Polynomial<Point> = Polynomial::new(agg_params);
 
-    let zero = eval(&P, &Scalar::zero());
+    let zero = util::eval(&P, &Scalar::zero());
 
     //let p = Polynomial::<Scalar>::lagrange(&xs, &ys).unwrap();
     //println!("P(0) = {}", zero);
