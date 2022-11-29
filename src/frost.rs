@@ -51,16 +51,17 @@ impl PublicNonce {
     }
 }
 
-// TODO: remove the pubs where they should be private
 #[derive(Clone)]
 #[allow(non_snake_case)]
 pub struct Party {
     pub id: Scalar,
+    pub pubkey: Point,
     f: Polynomial<Scalar>,
     shares: Vec<Share2>, // received from other parties
     secret: Scalar,
     pub nonces: Vec<Nonce>,
     pub Y: Point,
+    B: Vec<Vec<PublicNonce>>, // received from other parties
 }
 
 impl Party {
@@ -331,6 +332,18 @@ impl SignatureAggregator {
         let Yi: Vec<Point> = signers.iter().map(|x| parties[*x].Y).collect();
         let Z: Vec<Scalar> = signers.iter().map(|x| parties[*x].z).collect();
 
+/*
+        let (_B, R_vec, R) = get_B_rho_R_vec(&signers, &self.B, self.nonce_ctr, &msg);
+
+        let mut z = Scalar::zero();
+        let c = compute_H2(&self.key, &R, &msg); // only needed for checking z_i
+        for i in 0..signers.len() {
+            let party = &parties[signers[i]];
+            let z_i = party.sign(&self.key, &msg, &signers, self.nonce_ctr);
+            assert!(z_i * G == R_vec[i] + (lambda(&party.id, signers) * c * party.pubkey)); // TODO: This should return a list of bad parties.
+            z += z_i;
+        }
+*/
         self.update_nonce();
 
         Signature::new(&self.Y, &R, &msg, &B, &S, &Yi, &rho, &Z)
@@ -339,8 +352,8 @@ impl SignatureAggregator {
     fn update_nonce(&mut self) {
         self.nonce_ctr += 1;
         if self.nonce_ctr == self.num_nonces {
-            println!("Out of nonces!");
-            // TODO: Trigger another collection of Bs
+            println!("Out of nonces! Need to generate new ones!");
+            // TODO: Trigger another round of nonces generation & sharing B
             self.nonce_ctr = 0;
         }
     }

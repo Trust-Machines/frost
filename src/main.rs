@@ -11,13 +11,15 @@ mod vss;
 use frost::{Party, PublicNonce, PublicParty, Share, SignatureAggregator};
 
 // This will eventually need to be replaced by rpcs
-fn distribute_secret(parties: &mut Vec<Party>) {
+#[allow(non_snake_case)]
+fn distribute_secret(parties: &mut Vec<Party>, B: &Vec<Vec<PublicNonce>>) {
     // round2
     for i in 0..parties.len() {
         for j in 0..parties.len() {
             if i == j {
                 continue;
             }
+
             let share = parties[j].gen_share2(parties[i].id);
             parties[j].receive_share(share);
         }
@@ -25,6 +27,7 @@ fn distribute_secret(parties: &mut Vec<Party>) {
 
     for party in &mut parties.into_iter() {
         party.gen_secret();
+        party.receive_nonces(B.clone());
     }
 }
 
@@ -47,7 +50,7 @@ fn select_parties<RNG: RngCore + CryptoRng>(N: usize, T: usize, rng: &mut RNG) -
 #[allow(non_snake_case)]
 fn main() {
     let _args: Vec<String> = env::args().collect();
-    let num_sigs = 1;
+    let num_sigs = 7;
     let num_nonces = 5;
 
     let mut rng = OsRng::default();
@@ -63,7 +66,7 @@ fn main() {
         .iter_mut()
         .map(|p| p.gen_nonces(num_nonces, &mut rng))
         .collect();
-    distribute_secret(&mut parties); // maybe share Bs here as well?
+    distribute_secret(&mut parties, &B); // maybe share Bs here as well?
 
     let mut public_parties: Vec<PublicParty> = parties
         .iter()
