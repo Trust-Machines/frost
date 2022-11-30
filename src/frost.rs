@@ -51,13 +51,14 @@ impl PublicNonce {
     }
 }
 
+// TODO: remove the pubs where they should be private
 #[derive(Clone)]
 #[allow(non_snake_case)]
 pub struct Party {
     pub id: Scalar,
-    pub f: Polynomial<Scalar>,
-    pub shares: Vec<Share2>,
-    pub secret: Scalar,
+    f: Polynomial<Scalar>,
+    shares: Vec<Share2>, // received from other parties
+    secret: Scalar,
     pub nonces: Vec<Nonce>,
     pub Y: Point,
 }
@@ -74,7 +75,7 @@ impl Party {
         }
     }
 
-    pub fn share<RNG: RngCore + CryptoRng>(&self, rng: &mut RNG) -> Share {
+    pub fn gen_share<RNG: RngCore + CryptoRng>(&self, rng: &mut RNG) -> Share {
         Share {
             id: ID::new(&self.id, &self.f.data()[0], rng),
             phi: (0..self.f.data().len())
@@ -83,11 +84,40 @@ impl Party {
         }
     }
 
-    pub fn send(&mut self, share: Share2) {
+    pub fn gen_share2(&self, id: Scalar) -> Share2 {
+        Share2 {
+            i: self.id,
+            f_i: self.f.eval(id),
+        }
+    }
+
+    // TODO: keep track of IDs to ensure each is included once
+    // TODO: Either automatically compute_secret when N shares arrive
+    // or trigger it when done sharing and bark if there aren't N
+    pub fn receive_share(&mut self, share: Share2) {
+        //println!("id: {} received: {} {}", self.id, i, f_i);
+        // TODO: Verify against public commitment of A
+        // TODO: Perhaps check A proof here as well?
         self.shares.push(share);
     }
 
-    pub fn compute_secret(&mut self) {
+    pub fn gen_nonces<RNG: RngCore + CryptoRng>(
+        &mut self,
+        k: usize,
+        rng: &mut RNG,
+    ) -> Vec<PublicNonce> {
+        self.nonces = (0..k)
+            .map(|_| Nonce {
+                d: Scalar::random(rng),
+                e: Scalar::random(rng),
+            })
+            .collect();
+
+        self.nonces.iter().map(|n| PublicNonce::from(n)).collect()
+    }
+
+    pub fn gen_secret(&mut self) {
+        //self.secret = self.f.eval(self.id);
         for share in &self.shares {
             self.secret += &share.f_i;
         }
@@ -95,46 +125,11 @@ impl Party {
         self.Y = self.secret * G;
     }
 
-    pub fn gen_nonces<RNG: RngCore + CryptoRng>(&mut self, rng: &mut RNG) {
-        const N: usize = 16;
-        self.nonces = (0..N)
-            .map(|_| Nonce {
-                d: Scalar::random(rng),
-                e: Scalar::random(rng),
-            })
-            .collect();
-    }
-
-    #[allow(dead_code)]
-    pub fn pub_nonces(&self) -> Vec<PublicNonce> {
-        self.nonces.iter().map(|n| PublicNonce::from(n)).collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn pub_nonce(&self) -> PublicNonce {
-        PublicNonce::from(self.nonces.last().unwrap())
-    }
-
-    pub fn get_nonce<RNG: RngCore + CryptoRng>(&mut self, rng: &mut RNG) -> PublicNonce {
-        if self.nonces.is_empty() {
-            self.gen_nonces(rng);
-        }
-        PublicNonce::from(&self.nonces.last().unwrap())
-    }
-
-    #[allow(dead_code)]
-    pub fn pop_nonce<RNG: RngCore + CryptoRng>(&mut self, rng: &mut RNG) -> PublicNonce {
-        if self.nonces.is_empty() {
-            self.gen_nonces(rng);
-        }
-        PublicNonce::from(&self.nonces.pop().unwrap())
-    }
-
     #[allow(non_snake_case)]
-    pub fn get_binding(&self, B: &Vec<PublicNonce>, msg: &String) -> Scalar {
+    pub fn gen_binding(id: &Scalar, B: &Vec<PublicNonce>, msg: &String) -> Scalar {
         let mut hasher = Sha3_256::new();
 
-        hasher.update(self.id.as_bytes());
+        hasher.update(id.as_bytes());
         for b in B {
             hasher.update(b.D.compress().as_bytes());
             hasher.update(b.E.compress().as_bytes());
@@ -145,42 +140,53 @@ impl Party {
     }
 
     #[allow(non_snake_case)]
-    pub fn sign(
-        &self,
-        Y: &Point,
-        rho: &Scalar,
-        R: &Point,
-        msg: &String,
-        lambda: &Scalar,
-    ) -> Scalar {
-        let nonce = self.nonces.last().unwrap();
-        let c = Self::challenge(Y, R, msg);
-        let z = &nonce.d + rho * &nonce.e + c * lambda * &self.secret;
+    pub fn gen_lambda(i: &Scalar, S: &Vec<Scalar>) -> Scalar {
+        let mut lambda = Scalar::one();
 
-        z
-    }
-
-    pub fn lambda(i: &Scalar, parties: &Vec<Party>) -> Scalar {
-        let mut l = Scalar::one();
-
-        for p in parties {
-            if i != &p.id {
-                l *= &p.id / (&p.id - i);
+        for id in S {
+            if i != id {
+                lambda *= id / (id - i);
             }
         }
 
-        l
+        lambda
     }
 
     #[allow(non_snake_case)]
-    pub fn challenge(Y: &Point, R: &Point, msg: &String) -> Scalar {
-        let mut hasher = Sha3_256::new();
+    pub fn sign(
+        &self,
+        Y: &Point,
+        R: &Point,
+        msg: &String,
+        rho: &Scalar,
+        lambda: &Scalar,
+        nonce_index: usize,
+    ) -> Scalar {
+        let nonce = &self.nonces[nonce_index];
+        let c = Signature::gen_challenge(Y, R, msg);
+        nonce.d + rho * &nonce.e + c * lambda * &self.secret
+    }
+}
 
-        hasher.update(Y.compress().as_bytes());
-        hasher.update(R.compress().as_bytes());
-        hasher.update(msg.as_bytes());
+#[derive(Clone)]
+#[allow(non_snake_case)]
+pub struct PublicParty {
+    pub id: Scalar,
+    pub Y: Point,
+    pub nonces: Vec<Nonce>,
+    pub rho: Scalar,
+    pub z: Scalar,
+}
 
-        hash_to_scalar(&mut hasher)
+impl PublicParty {
+    pub fn from(p: &Party) -> Self {
+        Self {
+            id: p.id,
+            Y: p.Y,
+            nonces: p.nonces.clone(),
+            rho: Scalar::zero(),
+            z: Scalar::zero(),
+        }
     }
 }
 
@@ -192,38 +198,42 @@ pub struct Signature {
 
 impl Signature {
     #[allow(non_snake_case)]
-    pub fn new<RNG: RngCore + CryptoRng>(
+    pub fn new(
         Y: &Point,
+        R: &Point,
         msg: &String,
-        parties: &mut Vec<Party>,
-        rng: &mut RNG,
+        B: &Vec<PublicNonce>,
+        S: &Vec<Scalar>,
+        Yi: &Vec<Point>,
+        rho: &Vec<Scalar>,
+        sigs: &Vec<Scalar>,
     ) -> Self {
-        let mut B = Vec::new();
-        for party in parties.iter_mut() {
-            B.push(party.get_nonce(rng));
-        }
-
-        let rho: Vec<Scalar> = parties.iter().map(|p| p.get_binding(&B, &msg)).collect();
-
-        let mut R = Point::zero();
-        for i in 0..B.len() {
-            R += &B[i].D + &rho[i] * &B[i].E;
-        }
-
         let mut z = Scalar::zero();
-        for (i, party) in parties.iter().enumerate() {
-            let lambda = Party::lambda(&party.id, parties);
-            let z_i = party.sign(&Y, &rho[i], &R, &msg, &lambda);
+        for (i, id) in S.iter().enumerate() {
+            let lambda = Party::gen_lambda(&id, S);
+            let z_i = sigs[i];
 
             // verify each z_i to identify malicious byzantine actors
-            assert!(Self::verify_party_signature(
-                &z_i, &B[i], &Y, &rho[i], &R, &msg, &lambda, &party.Y
-            ));
+            //assert!(
+            if !Self::verify_party_signature(&z_i, &B[i], &Y, &rho[i], &R, &msg, &lambda, &Yi[i]) {
+                println!("Party signature failed verification");
+            }
 
             z += z_i;
         }
 
-        Self { R: R, z: z }
+        Self { R: R.clone(), z: z }
+    }
+
+    #[allow(non_snake_case)]
+    pub fn gen_challenge(Y: &Point, R: &Point, msg: &String) -> Scalar {
+        let mut hasher = Sha3_256::new();
+
+        hasher.update(Y.compress().as_bytes());
+        hasher.update(R.compress().as_bytes());
+        hasher.update(msg.as_bytes());
+
+        hash_to_scalar(&mut hasher)
     }
 
     #[allow(non_snake_case)]
@@ -237,7 +247,7 @@ impl Signature {
         lambda: &Scalar,
         Yi: &Point,
     ) -> bool {
-        let c = Party::challenge(Y, R, msg);
+        let c = Self::gen_challenge(Y, R, msg);
 
         z * G == (nonce.D + rho * nonce.E + (c * lambda * Yi))
     }
@@ -245,10 +255,93 @@ impl Signature {
     // verify: R' = z * G + -c * Y, pass if R' == R
     #[allow(non_snake_case)]
     pub fn verify(&self, Y: &Point, msg: &String) -> bool {
-        let c = Party::challenge(Y, &self.R, msg);
+        let c = Self::gen_challenge(Y, &self.R, msg);
         let R = &self.z * G + (-c) * Y;
 
         println!("Verification R = \n{}", R);
         R == self.R
+    }
+}
+
+#[allow(non_snake_case)]
+pub struct SignatureAggregator {
+    pub N: usize,
+    pub T: usize,
+    pub A: Vec<Share>,
+    pub B: Vec<Vec<PublicNonce>>, // outer vector is N-long, inner vector is T-long
+    pub Y: Point,
+    pub nonce_ctr: usize,
+    num_nonces: usize,
+}
+
+impl SignatureAggregator {
+    #[allow(non_snake_case)]
+    pub fn new(N: usize, T: usize, A: Vec<Share>, B: Vec<Vec<PublicNonce>>) -> Self {
+        // TODO: How should we handle bad As?
+        assert!(A.len() == N);
+        for A_i in &A {
+            assert!(A_i.verify());
+        }
+
+        let mut Y = Point::new(); // TODO: Compute pub key from A
+        for A_i in &A {
+            Y += &A_i.phi[0];
+        }
+
+        assert!(B.len() == N);
+        let num_nonces = B[0].len();
+        for b in &B {
+            assert!(num_nonces == b.len());
+        }
+        // TODO: Check that each B_i is len num_nonces?
+
+        Self {
+            N: N,
+            T: T,
+            A: A,
+            B: B,
+            Y: Y,
+            nonce_ctr: 0,
+            num_nonces: num_nonces,
+        }
+    }
+
+    pub fn get_nonces(&self, signers: &Vec<usize>) -> Vec<PublicNonce> {
+        signers
+            .iter()
+            .map(|&i| self.B[i][self.nonce_ctr].clone())
+            .collect()
+    }
+
+    #[allow(non_snake_case)]
+    pub fn sign(
+        &mut self,
+        msg: &String,
+        parties: &Vec<PublicParty>,
+        signers: &Vec<usize>,
+    ) -> Signature {
+        let B = self.get_nonces(signers);
+        let rho: Vec<Scalar> = signers
+            .iter()
+            .map(|i| Party::gen_binding(&parties[*i].id, &B, &msg))
+            .collect();
+        let R_vec: Vec<Point> = (0..B.len()).map(|i| &B[i].D + &rho[i] * &B[i].E).collect();
+        let R = R_vec.iter().fold(Point::zero(), |R, &R_i| R + R_i);
+        let S: Vec<Scalar> = signers.iter().map(|x| parties[*x].id).collect();
+        let Yi: Vec<Point> = signers.iter().map(|x| parties[*x].Y).collect();
+        let Z: Vec<Scalar> = signers.iter().map(|x| parties[*x].z).collect();
+
+        self.update_nonce();
+
+        Signature::new(&self.Y, &R, &msg, &B, &S, &Yi, &rho, &Z)
+    }
+
+    fn update_nonce(&mut self) {
+        self.nonce_ctr += 1;
+        if self.nonce_ctr == self.num_nonces {
+            println!("Out of nonces!");
+            // TODO: Trigger another collection of Bs
+            self.nonce_ctr = 0;
+        }
     }
 }

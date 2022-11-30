@@ -38,6 +38,7 @@ pub fn encode_point(p: &Point) -> String {
     hex::encode(p.compress().as_bytes())
 }
 
+#[allow(dead_code)]
 pub fn eval(p: &Polynomial<Point>, x: &Scalar) -> Point {
     let mut y = x.clone();
     let mut val = p.data()[0].clone();
