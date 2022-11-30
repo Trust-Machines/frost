@@ -55,7 +55,6 @@ impl PublicNonce {
 #[allow(non_snake_case)]
 pub struct Party {
     pub id: Scalar,
-    pub pubkey: Point,
     f: Polynomial<Scalar>,
     shares: Vec<Share2>, // received from other parties
     secret: Scalar,
@@ -73,6 +72,7 @@ impl Party {
             secret: Scalar::zero(),
             nonces: Vec::new(),
             Y: Point::zero(),
+            B: Vec::new(),
         }
     }
 
@@ -115,6 +115,11 @@ impl Party {
             .collect();
 
         self.nonces.iter().map(|n| PublicNonce::from(n)).collect()
+    }
+
+    #[allow(non_snake_case)]
+    pub fn receive_nonces(&mut self, B: Vec<Vec<PublicNonce>>) {
+        self.B = B;
     }
 
     pub fn gen_secret(&mut self) {
