@@ -14,6 +14,7 @@ use crate::vss::VSS;
 use hashbrown::HashMap;
 
 #[allow(non_snake_case)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct PolyCommitment {
     pub id: ID,
     pub A: Vec<Point>,
@@ -31,7 +32,7 @@ pub struct Nonce {
     e: Scalar,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[allow(non_snake_case)]
 pub struct PublicNonce {
     pub D: Point,
