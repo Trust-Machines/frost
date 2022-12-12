@@ -8,7 +8,7 @@ use sha3::{Digest, Sha3_256};
 use crate::util::hash_to_scalar;
 
 #[allow(non_snake_case)]
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ID {
     pub id: Scalar,
     pub kG: Point,
