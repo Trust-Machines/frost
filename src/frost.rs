@@ -11,17 +11,17 @@ use crate::schnorr::ID;
 use crate::util::hash_to_scalar;
 use crate::vss::VSS;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 #[allow(non_snake_case)]
 pub struct PolyCommitment {
-    pub id: ID,
+    pub party_id: ID,
     pub A: Vec<Point>,
 }
 
 impl PolyCommitment {
     pub fn verify(&self) -> bool {
-        self.id.verify(&self.A[0])
+        self.party_id.verify(&self.A[0])
     }
 }
 
@@ -47,19 +47,17 @@ impl PublicNonce {
     }
 }
 
-// TODO: Remove public key from here
 // The SA should get that as usual
 pub struct SignatureShare {
-    pub id: usize,
+    pub party_id: usize,
     pub z_i: Scalar,
-    pub public_key: Point,
 }
 
 #[allow(non_snake_case)]
-fn compute_binding(id: &Scalar, B: &Vec<PublicNonce>, msg: &String) -> Scalar {
+fn compute_binding(party_id: &Scalar, B: &Vec<PublicNonce>, msg: &String) -> Scalar {
     let mut hasher = Sha3_256::new();
 
-    hasher.update(id.as_bytes());
+    hasher.update(party_id.as_bytes());
     for b in B {
         hasher.update(b.D.compress().as_bytes());
         hasher.update(b.E.compress().as_bytes());
@@ -80,13 +78,15 @@ fn compute_challenge(publicKey: &Point, R: &Point, msg: &String) -> Scalar {
     hash_to_scalar(&mut hasher)
 }
 
-fn lambda(i: &usize, indices: &Vec<usize>) -> Scalar {
+fn lambda(i: &usize, signers: &HashMap<usize, HashSet<usize>>) -> Scalar {
     let mut lambda = Scalar::one();
-    let i_scalar = Scalar::from((i + 1) as u32);
-    for j in indices {
-        if i != j {
-            let j_scalar = Scalar::from((j + 1) as u32);
-            lambda *= j_scalar / (j_scalar - i_scalar);
+    let i_scalar = id_to_scalar(i);
+    for (_, h) in signers {
+        for j in h {
+            if i != j {
+                let j_scalar = id_to_scalar(j);
+                lambda *= j_scalar / (j_scalar - i_scalar);
+            }
         }
     }
     lambda
@@ -96,31 +96,44 @@ fn lambda(i: &usize, indices: &Vec<usize>) -> Scalar {
 // TODO: this fn needs a better name
 #[allow(non_snake_case)]
 fn get_B_rho_R_vec(
-    signers: &Vec<usize>,
+    signers: &HashMap<usize, HashSet<usize>>, // only the keys are needed
     B: &Vec<Vec<PublicNonce>>,
     index: usize,
     msg: &String,
-) -> (Vec<PublicNonce>, Vec<Point>, Point) {
-    let B = signers.iter().map(|&i| B[i][index].clone()).collect();
-    let rho: Vec<Scalar> = signers
+) -> (Vec<PublicNonce>, HashMap<usize, Point>, Point) {
+    let mut signer_vec = Vec::from_iter(signers.keys());
+    signer_vec.sort();
+    let B = signer_vec
         .iter()
-        .map(|&i| compute_binding(&Scalar::from((i + 1) as u32), &B, &msg))
+        .map(|&party_id| B[*party_id][index].clone())
         .collect();
-    let R_vec: Vec<Point> = (0..B.len()).map(|i| &B[i].D + &rho[i] * &B[i].E).collect();
-    let R = R_vec.iter().fold(Point::zero(), |R, &R_i| R + R_i);
-    (B, R_vec, R)
+    let rho: Vec<Scalar> = signer_vec
+        .iter()
+        .map(|&party_id| compute_binding(&id_to_scalar(&party_id), &B, &msg))
+        .collect();
+
+    let mut Ris = HashMap::new();
+    for i in 0..signer_vec.len() {
+        Ris.insert(*signer_vec[i], &B[i].D + &rho[i] * &B[i].E);
+    }
+    let R = Ris.values().fold(Point::zero(), |R, R_i| R + R_i);
+    (B, Ris, R)
+}
+
+fn id_to_scalar(id: &usize) -> Scalar {
+    Scalar::from((id + 1) as u32)
 }
 
 #[derive(Clone)]
 #[allow(non_snake_case)]
 pub struct Party {
-    pub id: usize,
-    pub public_key: Point,
-    n: usize,
-    _t: usize,
-    f: Polynomial<Scalar>,
-    //shares: HashMap<usize, Scalar>, // received from other parties
-    private_key: Scalar,
+    pub party_id: usize,
+    pub key_ids: HashSet<usize>,
+    pub public_key: HashMap<usize, Point>, // key is key_id
+    num_keys: usize,
+    num_parties: usize,
+    f: Polynomial<Scalar>, // one poly per party to simulate the sum of all their polys
+    private_key: HashMap<usize, Scalar>, // key is key_id
     group_key: Point,
     nonces: Vec<Nonce>,
     B: Vec<Vec<PublicNonce>>, // received from other parties
@@ -128,14 +141,22 @@ pub struct Party {
 
 impl Party {
     #[allow(non_snake_case)]
-    pub fn new<RNG: RngCore + CryptoRng>(id: usize, n: usize, t: usize, rng: &mut RNG) -> Self {
+    pub fn new<RNG: RngCore + CryptoRng>(
+        party_id: usize,
+        key_ids: HashSet<usize>,
+        num_keys: usize,
+        num_parties: usize,
+        threshold: usize,
+        rng: &mut RNG,
+    ) -> Self {
         Self {
-            id: id,
-            n: n,
-            _t: t,
-            f: VSS::random_poly(t - 1, rng),
-            private_key: Scalar::zero(),
-            public_key: Point::zero(),
+            party_id: party_id,
+            key_ids: key_ids,
+            num_keys: num_keys,
+            num_parties: num_parties,
+            f: VSS::random_poly(threshold - 1, rng),
+            private_key: HashMap::new(),
+            public_key: HashMap::new(),
             group_key: Point::zero(),
             nonces: Vec::new(),
             B: Vec::new(),
@@ -163,24 +184,24 @@ impl Party {
 
     // Warning: This function assumes that B already exists - it's just for resetting
     #[allow(non_snake_case)]
-    pub fn set_party_nonces(&mut self, i: usize, B: Vec<PublicNonce>) {
-        self.B[i] = B;
+    pub fn set_party_nonces(&mut self, party_id: usize, B: Vec<PublicNonce>) {
+        self.B[party_id] = B;
     }
 
     #[allow(non_snake_case)]
     pub fn get_poly_commitment<RNG: RngCore + CryptoRng>(&self, rng: &mut RNG) -> PolyCommitment {
         PolyCommitment {
-            id: ID::new(&self.id(), &self.f.data()[0], rng),
+            party_id: ID::new(&id_to_scalar(&self.party_id), &self.f.data()[0], rng),
             A: (0..self.f.data().len())
                 .map(|i| &self.f.data()[i] * G)
                 .collect(),
         }
     }
 
-    pub fn get_shares(&self) -> HashMap<usize, Scalar> {
-        let mut shares = HashMap::new();
-        for i in 0..self.n as usize {
-            shares.insert(i, self.f.eval(Scalar::from((i + 1) as u32)));
+    pub fn get_shares(&self) -> Vec<(usize, Scalar)> {
+        let mut shares = Vec::new();
+        for i in 0..self.num_keys as usize {
+            shares.push((i, self.f.eval(id_to_scalar(&i))));
         }
         shares
     }
@@ -188,37 +209,59 @@ impl Party {
     // TODO: Maybe this should be private? If receive_share is keeping track
     // of which it receives, then this could be called when it has N shares from unique ids
     #[allow(non_snake_case)]
-    pub fn compute_secret(&mut self, shares: HashMap<usize, Scalar>, A: &Vec<PolyCommitment>) {
+    pub fn compute_secret(
+        &mut self,
+        shares: HashMap<usize, Vec<(usize, Scalar)>>,
+        A: &Vec<PolyCommitment>,
+    ) -> HashMap<usize, Point> {
         // TODO: return error with a list of missing shares
-        assert!(shares.len() == self.n);
-        self.private_key = Scalar::zero();
-        for (i, s) in shares.iter() {
-            let Ai = &A[*i];
+        assert!(shares.len() == self.key_ids.len());
+
+        for Ai in A {
             assert!(Ai.verify()); // checks a0 proof
-            assert!(
-                s * G
-                    == (0..Ai.A.len()).fold(Point::zero(), |s, j| s
-                        + (Scalar::from((self.id + 1) as u32) ^ j) * Ai.A[j])
-            );
-            self.private_key += s;
             self.group_key += Ai.A[0].clone();
         }
-        self.public_key = self.private_key * G;
-        println!("Party {} secret {}", self.id, self.private_key);
-    }
 
-    fn id(&self) -> Scalar {
-        Scalar::from((self.id + 1) as u32)
+        for key_id in &self.key_ids {
+            assert!(shares[key_id].len() == self.num_parties);
+            self.private_key.insert(*key_id, Scalar::zero());
+
+            for (sender, s) in &shares[key_id] {
+                let Ai = &A[*sender];
+                assert!(
+                    s * G
+                        == (0..Ai.A.len()).fold(Point::zero(), |s, j| s
+                            + (id_to_scalar(key_id) ^ j) * Ai.A[j])
+                );
+                self.private_key
+                    .insert(*key_id, self.private_key[key_id] + s);
+            }
+            self.public_key
+                .insert(*key_id, self.private_key[key_id] * G);
+            println!(
+                "Party {} key_id {} secret {}",
+                self.party_id, key_id, self.private_key[&key_id]
+            );
+        }
+
+        self.public_key.clone()
     }
 
     #[allow(non_snake_case)]
-    pub fn sign(&self, msg: &String, signers: &Vec<usize>, nonce_index: usize) -> Scalar {
+    pub fn sign(
+        &self,
+        msg: &String,
+        signers: &HashMap<usize, HashSet<usize>>,
+        nonce_index: usize,
+    ) -> Scalar {
         let (B, _R_vec, R) = get_B_rho_R_vec(&signers, &self.B, nonce_index, &msg);
+        let c = compute_challenge(&self.group_key, &R, &msg);
         let nonce = &self.nonces[nonce_index]; // TODO: needs to check that index exists
-        let mut z = &nonce.d + &nonce.e * compute_binding(&self.id(), &B, &msg);
-        z += compute_challenge(&self.group_key, &R, &msg)
-            * &self.private_key
-            * lambda(&self.id, signers);
+
+        let mut z = &nonce.d + &nonce.e * compute_binding(&id_to_scalar(&self.party_id), &B, &msg);
+        for key_id in signers[&self.party_id].iter() {
+            z += c * &self.private_key[&key_id] * lambda(&key_id, signers);
+        }
         z
     }
 }
@@ -244,20 +287,29 @@ impl Signature {
 
 #[allow(non_snake_case)]
 pub struct SignatureAggregator {
-    pub N: usize,
-    pub T: usize,
+    pub num_keys: usize,
+    pub num_parties: usize,
+    pub threshold: usize,
     pub A: Vec<PolyCommitment>, // outer vector is N-long, inner vector is T-long
     pub B: Vec<Vec<PublicNonce>>, // outer vector is N-long, inner vector is T-long
-    pub key: Point,
+    pub group_key: Point,       // the group's combined public key
+    pub public_keys: HashMap<usize, Point>, // the public key for each point
     nonce_ctr: usize,
     num_nonces: usize,
 }
 
 impl SignatureAggregator {
     #[allow(non_snake_case)]
-    pub fn new(N: usize, T: usize, A: Vec<PolyCommitment>, B: Vec<Vec<PublicNonce>>) -> Self {
+    pub fn new(
+        num_keys: usize,
+        num_parties: usize,
+        threshold: usize,
+        A: Vec<PolyCommitment>,
+        B: Vec<Vec<PublicNonce>>,
+        public_keys: HashMap<usize, Point>,
+    ) -> Self {
         // TODO: How should we handle bad As?
-        assert!(A.len() == N);
+        assert!(A.len() == num_parties);
         for A_i in &A {
             assert!(A_i.verify());
         }
@@ -268,19 +320,20 @@ impl SignatureAggregator {
         }
         println!("SA groupKey {}", key);
 
-        assert!(B.len() == N);
+        assert!(B.len() == num_parties);
         let num_nonces = B[0].len();
         for b in &B {
             assert!(num_nonces == b.len());
         }
-        // TODO: Check that each B_i is len num_nonces?
 
         Self {
-            N: N,
-            T: T,
+            num_keys: num_keys,
+            num_parties: num_parties,
+            threshold: threshold,
             A: A,
             B: B,
-            key: key,
+            group_key: key,
+            public_keys: public_keys,
             nonce_ctr: 0,
             num_nonces: num_nonces,
         }
@@ -290,25 +343,30 @@ impl SignatureAggregator {
     pub fn sign(
         &mut self,
         msg: &String,
-        sig_shares: &Vec<SignatureShare>,
-        signers: &Vec<usize>,
+        sig_shares: &Vec<SignatureShare>, // one per party and each contains vectors for all their pts
+        signers: &HashMap<usize, HashSet<usize>>, // the list of party_ids
     ) -> Signature {
-        let (_B, R_vec, R) = get_B_rho_R_vec(&signers, &self.B, self.nonce_ctr, &msg);
+        let (_B, Ris, R) = get_B_rho_R_vec(&signers, &self.B, self.nonce_ctr, &msg);
 
         let mut z = Scalar::zero();
-        let c = compute_challenge(&self.key, &R, &msg); // only needed for checking z_i
-        for i in 0..signers.len() {
-            let z_i = sig_shares[i].z_i;
+        let c = compute_challenge(&self.group_key, &R, &msg); // only needed for checking z_i
+        for sig in sig_shares {
             assert!(
-                z_i * G
-                    == R_vec[i]
-                        + (lambda(&sig_shares[i].id, signers) * c * sig_shares[i].public_key)
-            ); // TODO: This should return a list of bad parties.
-            z += z_i;
+                sig.z_i * G
+                    == Ris[&sig.party_id]
+                        + signers[&sig.party_id]
+                            .iter()
+                            .fold(Point::zero(), |p, k| p + lambda(&k, signers)
+                                * c
+                                * self.public_keys[&k])
+            );
+            z += sig.z_i;
         }
         self.update_nonce();
 
-        Signature { R: R, z: z }
+        let sig = Signature { R: R, z: z };
+        assert!(sig.verify(&self.group_key, msg));
+        sig
     }
 
     pub fn get_nonce_ctr(&self) -> usize {

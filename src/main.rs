@@ -2,34 +2,60 @@ use rand_core::{CryptoRng, OsRng, RngCore};
 use std::{env, time};
 
 use frost::frost::{Party, PolyCommitment, PublicNonce, SignatureAggregator, SignatureShare};
+use secp256k1_math::{point::Point, scalar::Scalar};
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
+
+// pulls out on the shares relevant to party_id
+// from all the shares that were broadcast
+fn filter_party_shares(
+    party_id: usize,
+    key_owners: &Vec<usize>,
+    broadcast_shares: &Vec<Vec<(usize, Scalar)>>,
+) -> HashMap<usize, Vec<(usize, Scalar)>> {
+    let mut shares: HashMap<usize, Vec<(usize, Scalar)>> = HashMap::new();
+
+    for sender in 0..broadcast_shares.len() {
+        for (key_id, s) in &broadcast_shares[sender] {
+            if party_id == key_owners[*key_id] {
+                // if shares[key_id] doesn't exist create a new vector
+                if shares.contains_key(key_id) == false {
+                    shares.insert(key_id.clone(), Vec::new());
+                }
+
+                let v = shares.entry(*key_id).or_insert(Vec::new());
+                v.push((sender, s.clone()));
+            }
+        }
+    }
+    shares
+}
 
 // This will eventually need to be replaced by rpcs
 #[allow(non_snake_case)]
 fn distribute(
     parties: &mut Vec<Party>,
+    key_owners: &Vec<usize>, // N-long vector with indices = key_id and values = party_id
     A: &Vec<PolyCommitment>,
     B: &Vec<Vec<PublicNonce>>,
-) -> u128 {
+) -> (u128, HashMap<usize, Point>) {
     // each party broadcasts their commitments
-    // these hashmaps will need to be serialized in tuples w/ the value encrypted
+    // these will need to be serialized in tuples w/ the value encrypted
     let mut broadcast_shares = Vec::new();
-    for i in 0..parties.len() {
-        broadcast_shares.push(parties[i].get_shares());
+    for party_id in 0..parties.len() {
+        broadcast_shares.push(parties[party_id].get_shares());
     }
 
+    let mut public_keys = HashMap::new();
     let mut total_compute_secret_time = 0;
-
-    // each party collects its shares from the broadcasts
-    // maybe this should collect into a hashmap first?
-    for i in 0..parties.len() {
-        let mut h = HashMap::new();
-        for j in 0..parties.len() {
-            h.insert(j, broadcast_shares[j][&i]);
-        }
+    for party_id in 0..parties.len() {
+        let party_shares = filter_party_shares(party_id, &key_owners, &broadcast_shares);
         let compute_secret_start = time::Instant::now();
-        parties[i].compute_secret(h, &A);
+        let mut pks = parties[party_id].compute_secret(party_shares, &A);
+        for (k, v) in pks.drain() {
+            // TODO: Is there a better way to add hashmaps?
+            public_keys.insert(k, v);
+        }
         let compute_secret_time = compute_secret_start.elapsed();
         total_compute_secret_time += compute_secret_time.as_micros();
     }
@@ -39,42 +65,49 @@ fn distribute(
         parties[i].set_group_nonces(B.clone());
     }
 
-    total_compute_secret_time
+    (total_compute_secret_time, public_keys)
 }
 
 #[allow(non_snake_case)]
-fn select_parties<RNG: RngCore + CryptoRng>(N: usize, T: usize, rng: &mut RNG) -> Vec<usize> {
-    let mut indices: Vec<usize> = Vec::new();
+fn select_parties<RNG: RngCore + CryptoRng>(
+    key_owners: &Vec<usize>,
+    T: usize,
+    rng: &mut RNG,
+) -> HashMap<usize, HashSet<usize>> {
+    let mut signers = HashMap::new();
+    let mut pts = Vec::new();
 
-    for i in 0..N {
-        indices.push(i);
+    for i in 0..key_owners.len() {
+        pts.push(i);
     }
 
-    while indices.len() > T {
-        let i = rng.next_u64() as usize % indices.len();
-        indices.swap_remove(i);
+    while pts.len() > T {
+        let i = rng.next_u64() as usize % pts.len();
+        pts.swap_remove(i);
     }
 
-    indices
+    for k in pts {
+        let s = signers.entry(key_owners[k]).or_insert(HashSet::new());
+        s.insert(k);
+    }
+
+    signers
 }
 
 // There might be a slick one-liner for this?
 fn collect_signatures(
     parties: &Vec<Party>,
-    signers: &Vec<usize>,
+    signers: &HashMap<usize, HashSet<usize>>,
     nonce_ctr: usize,
     msg: &String,
 ) -> Vec<SignatureShare> {
-    let mut sigs = Vec::new();
-    for i in 0..signers.len() {
-        let party = &parties[signers[i]];
-        sigs.push(SignatureShare {
-            id: party.id.clone(),
-            z_i: party.sign(&msg, &signers, nonce_ctr),
-            public_key: party.public_key.clone(),
-        });
-    }
-    sigs
+    signers
+        .keys()
+        .map(|party_id| SignatureShare {
+            party_id: party_id.clone(),
+            z_i: parties[*party_id].sign(&msg, &signers, nonce_ctr),
+        })
+        .collect()
 }
 
 // In case one party loses their nonces & needs to regenerate
@@ -98,21 +131,48 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let num_sigs = 7;
     let num_nonces = 5;
-    let N: usize = if args.len() > 1 {
+    let num_keys: usize = if args.len() > 1 {
         args[1].parse::<usize>().unwrap()
     } else {
         10
     };
-    let T: usize = if args.len() > 2 {
+    let threshold: usize = if args.len() > 2 {
         args[2].parse::<usize>().unwrap()
     } else {
-        (N * 2) / 3
+        (num_keys * 2) / 3
     };
-
     let mut rng = OsRng::default();
 
+    // index is key_id and value is party_id
+    //let key_owners = vec![0,1,2, 3, 4, 5, 6, 7, 8, 9];
+    let key_owners = vec![0, 1, 2, 0, 0, 1, 1, 1, 2, 3];
+    assert!(key_owners.len() == num_keys);
+    let num_parties = *(key_owners.iter().max().unwrap()) + 1;
+
+    // collect key_ids to each party
+    // this is only used to initialize the parties & could be refactored?
+    let mut party_keys: Vec<HashSet<usize>> = Vec::new();
+    for key_id in 0..key_owners.len() {
+        let party_id = key_owners[key_id];
+        while party_id >= party_keys.len() {
+            party_keys.push(HashSet::new());
+        }
+        party_keys[party_id].insert(key_id);
+    }
+
     // Initial set-up
-    let mut parties: Vec<Party> = (0..N).map(|i| Party::new(i, N, T, &mut rng)).collect();
+    let mut parties: Vec<Party> = (0..num_parties)
+        .map(|i| {
+            Party::new(
+                i,
+                party_keys[i].clone(),
+                num_keys,
+                num_parties,
+                threshold,
+                &mut rng,
+            )
+        })
+        .collect();
     let A: Vec<PolyCommitment> = parties
         .iter()
         .map(|p| p.get_poly_commitment(&mut rng))
@@ -121,15 +181,15 @@ fn main() {
         .iter_mut()
         .map(|p| p.gen_nonces(num_nonces, &mut rng))
         .collect();
-    let total_compute_secret_time = distribute(&mut parties, &A, &B);
+    let (total_compute_secret_time, public_keys) = distribute(&mut parties, &key_owners, &A, &B);
 
-    let mut sig_agg = SignatureAggregator::new(N, T, A, B);
+    let mut sig_agg = SignatureAggregator::new(num_keys, num_parties, threshold, A, B, public_keys);
 
     let mut total_sig_time = 0;
     let mut total_party_sig_time = 0;
     for sig_ct in 0..num_sigs {
         let msg = "It was many and many a year ago".to_string();
-        let signers = select_parties(N, T, &mut rng);
+        let signers = select_parties(&key_owners, threshold, &mut rng); // signers[party_id] = Set(key_ids)
         let nonce_ctr = sig_agg.get_nonce_ctr();
         let party_sig_start = time::Instant::now();
         let sig_shares = collect_signatures(&parties, &signers, nonce_ctr, &msg);
@@ -142,7 +202,7 @@ fn main() {
         total_sig_time += sig_time.as_micros();
 
         println!("Signature (R,z) = \n({},{})", sig.R, sig.z);
-        assert!(sig.verify(&sig_agg.key, &msg));
+        assert!(sig.verify(&sig_agg.group_key, &msg));
 
         // this resets one party's nonces assuming it went down and needed to regenerate
         if sig_ct == 3 {
@@ -157,6 +217,8 @@ fn main() {
             );
         }
 
+        // this refills the nonces if they run out
+        // TODO: who should kick this off?
         if sig_agg.get_nonce_ctr() == num_nonces as usize {
             println!("Everyone's nonces were refilled.");
             let B: Vec<Vec<PublicNonce>> = parties
@@ -169,18 +231,22 @@ fn main() {
             sig_agg.set_group_nonces(B.clone());
         }
     }
-    println!("With {} parties and {} signers:", N, T);
+    // Note: The scaling likely depends on the distribution of keys across parties
+    println!(
+        "With {} keys across {} parties and {} signers:",
+        num_keys, num_parties, threshold
+    );
     println!(
         "{} party secrets in {} us ({} us/secret)",
-        N,
+        num_keys,
         total_compute_secret_time,
-        total_compute_secret_time / (N as u128)
+        total_compute_secret_time / (num_keys as u128)
     );
     println!(
         "{} party signatures in {} us ({} us/sig)",
-        num_sigs * T as u32,
+        num_sigs * threshold as u32,
         total_party_sig_time,
-        total_party_sig_time / (num_sigs * (T as u32)) as u128
+        total_party_sig_time / (num_sigs * (threshold as u32)) as u128
     );
     println!(
         "{} signatures in {} us ({} us/sig)",
