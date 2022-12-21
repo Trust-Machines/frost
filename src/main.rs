@@ -1,8 +1,8 @@
 use rand_core::{CryptoRng, OsRng, RngCore};
 use std::{env, time};
 
-use frost::frost::{Party, PolyCommitment, PublicNonce, SignatureAggregator, SignatureShare};
-use secp256k1_math::{point::Point, scalar::Scalar};
+use frost::frost::{Party, PolyCommitment, PublicNonce, SignatureAggregator, SignatureShare, SelectedSigners, PubKeyMap};
+use secp256k1_math::{scalar::Scalar};
 
 use hashbrown::{HashMap, HashSet};
 
@@ -10,8 +10,8 @@ use hashbrown::{HashMap, HashSet};
 // from all the shares that were broadcast
 fn filter_party_shares(
     party_id: usize,
-    key_owners: &Vec<usize>,
-    broadcast_shares: &Vec<Vec<(usize, Scalar)>>,
+    key_owners: &[usize],
+    broadcast_shares: &[Vec<(usize, Scalar)>],
 ) -> HashMap<usize, Vec<(usize, Scalar)>> {
     let mut shares: HashMap<usize, Vec<(usize, Scalar)>> = HashMap::new();
 
@@ -35,10 +35,10 @@ fn filter_party_shares(
 #[allow(non_snake_case)]
 fn distribute(
     parties: &mut Vec<Party>,
-    key_owners: &Vec<usize>, // N-long vector with indices = key_id and values = party_id
-    A: &Vec<PolyCommitment>,
+    key_owners: &[usize], // N-long vector with indices = key_id and values = party_id
+    A: &[PolyCommitment],
     B: &Vec<Vec<PublicNonce>>,
-) -> (u128, HashMap<usize, Point>) {
+) -> (u128, PubKeyMap) {
     // each party broadcasts their commitments
     // these will need to be serialized in tuples w/ the value encrypted
     let mut broadcast_shares = Vec::new();
@@ -51,11 +51,9 @@ fn distribute(
     for party_id in 0..parties.len() {
         let party_shares = filter_party_shares(party_id, &key_owners, &broadcast_shares);
         let compute_secret_start = time::Instant::now();
-        let mut pks = parties[party_id].compute_secret(party_shares, &A);
-        for (k, v) in pks.drain() {
-            // TODO: Is there a better way to add hashmaps?
-            public_keys.insert(k, v);
-        }
+        let pks = parties[party_id].compute_secret(party_shares, &A);
+        public_keys.extend(pks);
+
         let compute_secret_time = compute_secret_start.elapsed();
         total_compute_secret_time += compute_secret_time.as_micros();
     }
@@ -70,10 +68,10 @@ fn distribute(
 
 #[allow(non_snake_case)]
 fn select_parties<RNG: RngCore + CryptoRng>(
-    key_owners: &Vec<usize>,
+    key_owners: &[usize],
     T: usize,
     rng: &mut RNG,
-) -> HashMap<usize, HashSet<usize>> {
+) -> SelectedSigners {
     let mut signers = HashMap::new();
     let mut pts = Vec::new();
 
@@ -96,15 +94,15 @@ fn select_parties<RNG: RngCore + CryptoRng>(
 
 // There might be a slick one-liner for this?
 fn collect_signatures(
-    parties: &Vec<Party>,
-    signers: &HashMap<usize, HashSet<usize>>,
+    parties: &[Party],
+    signers: &SelectedSigners,
     nonce_ctr: usize,
     msg: &String,
 ) -> Vec<SignatureShare> {
     signers
         .keys()
         .map(|party_id| SignatureShare {
-            party_id: party_id.clone(),
+            party_id: *party_id,
             z_i: parties[*party_id].sign(&msg, &signers, nonce_ctr),
         })
         .collect()
@@ -113,7 +111,7 @@ fn collect_signatures(
 // In case one party loses their nonces & needs to regenerate
 #[allow(non_snake_case)]
 fn reset_nonce<RNG: RngCore + CryptoRng>(
-    parties: &mut Vec<Party>,
+    parties: &mut [Party],
     sa: &mut SignatureAggregator,
     i: usize,
     num_nonces: u32,
