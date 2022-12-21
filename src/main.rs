@@ -13,7 +13,7 @@ fn distribute(
     parties: &mut Vec<Party>,
     A: &Vec<PolyCommitment>,
     B: &Vec<Vec<PublicNonce>>,
-) -> u128 {
+) -> (u128, usize) {
     // each party broadcasts their commitments
     // these hashmaps will need to be serialized in tuples w/ the value encrypted
     let mut broadcast_shares = Vec::new();
@@ -41,7 +41,11 @@ fn distribute(
         parties[i].set_group_nonces(B.clone());
     }
 
-    total_compute_secret_time
+    let total_transmitted_bandwidth = serialized_size(&broadcast_shares)
+        + serialized_size(&A) * parties.len()
+        + serialized_size(&B) * parties.len();
+
+    (total_compute_secret_time, total_transmitted_bandwidth)
 }
 
 #[allow(non_snake_case)]
@@ -95,6 +99,13 @@ fn reset_nonce<RNG: RngCore + CryptoRng>(
     sa.set_party_nonces(i, B.clone());
 }
 
+// Size in bytes after serializing obj
+fn serialized_size<T: serde::Serialize>(obj: &T) -> usize {
+    bincode::serialize(obj)
+        .expect("Bincode serialization failed")
+        .len()
+}
+
 #[allow(non_snake_case)]
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -123,12 +134,16 @@ fn main() {
         .iter_mut()
         .map(|p| p.gen_nonces(num_nonces, &mut rng))
         .collect();
-    let total_compute_secret_time = distribute(&mut parties, &A, &B);
+    let (total_compute_secret_time, total_secret_distribution_bandwidth) =
+        distribute(&mut parties, &A, &B);
 
     let mut sig_agg = SignatureAggregator::new(N, T, A, B);
 
     let mut total_sig_time = 0;
     let mut total_party_sig_time = 0;
+    let mut total_sig_bandwidth = 0;
+    let mut total_nonce_distribution_bandwidth = 0;
+
     for sig_ct in 0..num_sigs {
         let msg = "It was many and many a year ago".to_string();
         let signers = select_parties(N, T, &mut rng);
@@ -142,6 +157,7 @@ fn main() {
 
         total_party_sig_time += party_sig_time.as_micros();
         total_sig_time += sig_time.as_micros();
+        total_sig_bandwidth += serialized_size(&sig_shares);
 
         println!("Signature (R,z) = \n({},{})", sig.R, sig.z);
         assert!(sig.verify(&sig_agg.key, &msg));
@@ -165,6 +181,9 @@ fn main() {
                 .iter_mut()
                 .map(|p| p.gen_nonces(num_nonces, &mut rng))
                 .collect();
+
+            total_nonce_distribution_bandwidth += serialized_size(&B) * parties.len();
+
             for p in &mut parties {
                 p.set_group_nonces(B.clone());
             }
@@ -189,5 +208,13 @@ fn main() {
         num_sigs,
         total_sig_time,
         total_sig_time / num_sigs as u128
+    );
+
+    println!("");
+    println!(
+        "Bandwidth usage\n  Secret distribution: {}\n  Nonce distribution: {}\n  Signing: {}",
+        total_secret_distribution_bandwidth,
+        total_nonce_distribution_bandwidth,
+        total_sig_bandwidth
     );
 }
