@@ -17,7 +17,6 @@ pub type PubKeyMap = HashMap<usize, Point>;
 pub type PrivKeyMap = HashMap<usize, Scalar>;
 pub type SelectedSigners = HashMap<usize, HashSet<usize>>;
 
-
 #[allow(non_snake_case)]
 pub struct PolyCommitment {
     pub party_id: ID,
@@ -253,12 +252,7 @@ impl Party {
     }
 
     #[allow(non_snake_case)]
-    pub fn sign(
-        &self,
-        msg: &str,
-        signers: &SelectedSigners,
-        nonce_index: usize,
-    ) -> Scalar {
+    pub fn sign(&self, msg: &str, signers: &SelectedSigners, nonce_index: usize) -> Scalar {
         let (B, _R_vec, R) = get_B_rho_R_vec(&signers, &self.B, nonce_index, &msg);
         let c = compute_challenge(&self.group_key, &R, &msg);
         let nonce = &self.nonces[nonce_index]; // TODO: needs to check that index exists
@@ -349,7 +343,7 @@ impl SignatureAggregator {
         &mut self,
         msg: &str,
         sig_shares: &[SignatureShare], // one per party and each contains vectors for all their pts
-        signers: &SelectedSigners, // the list of party_ids
+        signers: &SelectedSigners,     // the list of party_ids
     ) -> Signature {
         let (_B, Ris, R) = get_B_rho_R_vec(&signers, &self.B, self.nonce_ctr, &msg);
 

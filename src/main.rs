@@ -1,8 +1,11 @@
 use rand_core::{CryptoRng, OsRng, RngCore};
 use std::{env, time};
 
-use frost::frost::{Party, PolyCommitment, PublicNonce, SignatureAggregator, SignatureShare, SelectedSigners, PubKeyMap};
-use secp256k1_math::{scalar::Scalar};
+use frost::frost::{
+    Party, PolyCommitment, PubKeyMap, PublicNonce, SelectedSigners, SignatureAggregator,
+    SignatureShare,
+};
+use secp256k1_math::scalar::Scalar;
 
 use hashbrown::{HashMap, HashSet};
 
