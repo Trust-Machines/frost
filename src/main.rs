@@ -41,9 +41,8 @@ fn distribute(
         parties[i].set_group_nonces(B.clone());
     }
 
-    let total_transmitted_bandwidth = serialized_size(&broadcast_shares)
-        + serialized_size(&A) * parties.len()
-        + serialized_size(&B) * parties.len();
+    let total_transmitted_bandwidth =
+        serialized_size(&broadcast_shares) + serialized_size(&A) * parties.len();
 
     (total_compute_secret_time, total_transmitted_bandwidth)
 }
@@ -137,12 +136,12 @@ fn main() {
     let (total_compute_secret_time, total_secret_distribution_bandwidth) =
         distribute(&mut parties, &A, &B);
 
-    let mut sig_agg = SignatureAggregator::new(N, T, A, B);
-
     let mut total_sig_time = 0;
     let mut total_party_sig_time = 0;
     let mut total_sig_bandwidth = 0;
-    let mut total_nonce_distribution_bandwidth = 0;
+    let mut total_nonce_distribution_bandwidth = serialized_size(&B);
+
+    let mut sig_agg = SignatureAggregator::new(N, T, A, B);
 
     for sig_ct in 0..num_sigs {
         let msg = "It was many and many a year ago".to_string();
