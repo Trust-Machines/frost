@@ -248,7 +248,7 @@ pub struct SignatureAggregator {
     pub T: usize,
     pub A: Vec<PolyCommitment>, // outer vector is N-long, inner vector is T-long
     pub B: Vec<Vec<PublicNonce>>, // outer vector is N-long, inner vector is T-long
-    pub key: Point,
+    public_key: Vec<Point>,     // pubkey[0] = group's public key
     nonce_ctr: usize,
     num_nonces: usize,
 }
@@ -262,11 +262,18 @@ impl SignatureAggregator {
             assert!(A_i.verify());
         }
 
-        let mut key = Point::new(); // TODO: Compute pub key from A
-        for A_i in &A {
-            key += &A_i.A[0];
+        let mut pubkey = Vec::new();
+        for _ in 0..(N + 1) {
+            pubkey.push(Point::new());
         }
-        println!("SA groupKey {}", key);
+        for A_i in &A {
+            for i in 0..(N + 1) {
+                pubkey[i] += (0..A_i.A.len()).fold(Point::zero(), |s, j| {
+                    s + (Scalar::from((i) as u32) ^ j) * A_i.A[j]
+                });
+            }
+        }
+        println!("SA groupKey {}", pubkey[0]);
 
         assert!(B.len() == N);
         let num_nonces = B[0].len();
@@ -280,7 +287,7 @@ impl SignatureAggregator {
             T: T,
             A: A,
             B: B,
-            key: key,
+            public_key: pubkey,
             nonce_ctr: 0,
             num_nonces: num_nonces,
         }
@@ -296,13 +303,15 @@ impl SignatureAggregator {
         let (_B, R_vec, R) = get_B_rho_R_vec(&signers, &self.B, self.nonce_ctr, &msg);
 
         let mut z = Scalar::zero();
-        let c = compute_challenge(&self.key, &R, &msg); // only needed for checking z_i
+        let c = compute_challenge(&self.public_key[0], &R, &msg); // only needed for checking z_i
         for i in 0..signers.len() {
             let z_i = sig_shares[i].z_i;
             assert!(
                 z_i * G
                     == R_vec[i]
-                        + (lambda(&sig_shares[i].id, signers) * c * sig_shares[i].public_key)
+                        + (lambda(&sig_shares[i].id, signers)
+                            * c
+                            * self.public_key[sig_shares[i].id + 1])
             ); // TODO: This should return a list of bad parties.
             z += z_i;
         }
@@ -321,6 +330,10 @@ impl SignatureAggregator {
             // TODO: Should this kick off the re-generation process?
             println!("This is the last available nonce! Need to generate more!");
         }
+    }
+
+    pub fn get_public_key(&self) -> &Point {
+        &self.public_key[0]
     }
 
     #[allow(non_snake_case)]

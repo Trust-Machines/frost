@@ -142,7 +142,7 @@ fn main() {
         total_sig_time += sig_time.as_micros();
 
         println!("Signature (R,z) = \n({},{})", sig.R, sig.z);
-        assert!(sig.verify(&sig_agg.key, &msg));
+        assert!(sig.verify(sig_agg.get_public_key(), &msg));
 
         // this resets one party's nonces assuming it went down and needed to regenerate
         if sig_ct == 3 {
