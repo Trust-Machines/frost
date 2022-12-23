@@ -157,6 +157,8 @@ fn main() {
         total_party_sig_time += party_sig_time.as_micros();
         total_sig_time += sig_time.as_micros();
         total_sig_bandwidth += serialized_size(&sig_shares);
+        total_sig_bandwidth +=
+            (serialized_size(&msg) + serialized_size(&nonce_ctr)) * signers.len();
 
         println!("Signature (R,z) = \n({},{})", sig.R, sig.z);
         assert!(sig.verify(&sig_agg.key, &msg));
