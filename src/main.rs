@@ -100,7 +100,7 @@ fn collect_signatures(
     parties: &[Party],
     signers: &SelectedSigners,
     nonce_ctr: usize,
-    msg: &String,
+    msg: &[u8],
 ) -> Vec<SignatureShare> {
     signers
         .keys()
@@ -189,7 +189,8 @@ fn main() {
     let mut total_sig_time = 0;
     let mut total_party_sig_time = 0;
     for sig_ct in 0..num_sigs {
-        let msg = "It was many and many a year ago".to_string();
+        let msg = "It was many and many a year ago".as_bytes();
+
         let signers = select_parties(&key_owners, threshold, &mut rng); // signers[party_id] = Set(key_ids)
         let nonce_ctr = sig_agg.get_nonce_ctr();
         let party_sig_start = time::Instant::now();

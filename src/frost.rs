@@ -58,7 +58,7 @@ pub struct SignatureShare {
 }
 
 #[allow(non_snake_case)]
-fn compute_binding(party_id: &Scalar, B: &Vec<PublicNonce>, msg: &str) -> Scalar {
+fn compute_binding(party_id: &Scalar, B: &Vec<PublicNonce>, msg: &[u8]) -> Scalar {
     let mut hasher = Sha3_256::new();
 
     hasher.update(party_id.as_bytes());
@@ -66,18 +66,18 @@ fn compute_binding(party_id: &Scalar, B: &Vec<PublicNonce>, msg: &str) -> Scalar
         hasher.update(b.D.compress().as_bytes());
         hasher.update(b.E.compress().as_bytes());
     }
-    hasher.update(msg.as_bytes());
+    hasher.update(msg);
 
     hash_to_scalar(&mut hasher)
 }
 
 #[allow(non_snake_case)]
-fn compute_challenge(publicKey: &Point, R: &Point, msg: &str) -> Scalar {
+fn compute_challenge(publicKey: &Point, R: &Point, msg: &[u8]) -> Scalar {
     let mut hasher = Sha3_256::new();
 
     hasher.update(publicKey.compress().as_bytes());
     hasher.update(R.compress().as_bytes());
-    hasher.update(msg.as_bytes());
+    hasher.update(msg);
 
     hash_to_scalar(&mut hasher)
 }
@@ -99,11 +99,11 @@ fn lambda(i: &usize, signers: &SelectedSigners) -> Scalar {
 // Is this the best way to return these values?
 // TODO: this fn needs a better name
 #[allow(non_snake_case)]
-fn get_B_rho_R_vec(
+fn compute_intermediate_values(
     signers: &SelectedSigners, // only the keys are needed
     B: &Vec<Vec<PublicNonce>>,
     index: usize,
-    msg: &str,
+    msg: &[u8],
 ) -> (Vec<PublicNonce>, HashMap<usize, Point>, Point) {
     let mut signer_vec = Vec::from_iter(signers.keys());
     signer_vec.sort();
@@ -252,8 +252,8 @@ impl Party {
     }
 
     #[allow(non_snake_case)]
-    pub fn sign(&self, msg: &str, signers: &SelectedSigners, nonce_index: usize) -> Scalar {
-        let (B, _R_vec, R) = get_B_rho_R_vec(&signers, &self.B, nonce_index, &msg);
+    pub fn sign(&self, msg: &[u8], signers: &SelectedSigners, nonce_index: usize) -> Scalar {
+        let (B, _R_vec, R) = compute_intermediate_values(&signers, &self.B, nonce_index, &msg);
         let c = compute_challenge(&self.group_key, &R, &msg);
         let nonce = &self.nonces[nonce_index]; // TODO: needs to check that index exists
 
@@ -274,7 +274,7 @@ pub struct Signature {
 impl Signature {
     // verify: R' = z * G + -c * publicKey, pass if R' == R
     #[allow(non_snake_case)]
-    pub fn verify(&self, public_key: &Point, msg: &str) -> bool {
+    pub fn verify(&self, public_key: &Point, msg: &[u8]) -> bool {
         let c = compute_challenge(&public_key, &self.R, &msg);
         let R = &self.z * G + (-c) * public_key;
 
@@ -307,7 +307,6 @@ impl SignatureAggregator {
         B: Vec<Vec<PublicNonce>>,
         public_keys: PubKeyMap,
     ) -> Self {
-        // TODO: How should we handle bad As?
         assert!(A.len() == num_parties);
         for A_i in &A {
             assert!(A_i.verify());
@@ -341,11 +340,11 @@ impl SignatureAggregator {
     #[allow(non_snake_case)]
     pub fn sign(
         &mut self,
-        msg: &str,
+        msg: &[u8],
         sig_shares: &[SignatureShare], // one per party and each contains vectors for all their pts
         signers: &SelectedSigners,     // the list of party_ids
     ) -> Signature {
-        let (_B, Ris, R) = get_B_rho_R_vec(&signers, &self.B, self.nonce_ctr, &msg);
+        let (_B, Ris, R) = compute_intermediate_values(&signers, &self.B, self.nonce_ctr, &msg);
 
         let mut z = Scalar::zero();
         let c = compute_challenge(&self.group_key, &R, &msg); // only needed for checking z_i
