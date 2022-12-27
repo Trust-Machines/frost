@@ -7,9 +7,11 @@ edition = "2021"
 
 [dependencies]
 bincode = "1.3.3"
+clap = { version = "4.0", features = ["derive"] }
 hashbrown = { version = "0.13", features = ["serde"] }
 hex = "0.4.3"
 num-traits = "0.2"
+plotters = "0.3.4"
 polynomial = "0.2.4"
 rand_core = "0.5"
 secp256k1-math = { git = "https://github.com/Trust-Machines/rust-secp256k1-math", rev = "ad35f79ce18d67fdd3c11697066b28ea38c5fbde" }
@@ -23,3 +25,6 @@ crate-type = ["lib"]   # The crate types to generate.
 [[bin]]
 name = "frost"
 path = "src/main.rs"
+
+[[bin]]
+name = "plot_bandwidth"

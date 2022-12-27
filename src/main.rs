@@ -1,3 +1,3 @@
 fn main() {
-    frost::simulate::simulate(10, 6);
+    frost::simulation::simulate(10, 6);
 }
