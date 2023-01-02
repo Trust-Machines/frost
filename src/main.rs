@@ -2,8 +2,7 @@ use rand_core::{CryptoRng, OsRng, RngCore};
 use std::{env, time};
 
 use frost::frost::{
-    Party, PolyCommitment, PubKeyMap, PublicNonce, SelectedSigners, SignatureAggregator,
-    SignatureShare,
+    Party, PolyCommitment, PublicNonce, SelectedSigners, SignatureAggregator, SignatureShare,
 };
 use secp256k1_math::scalar::Scalar;
 
@@ -41,7 +40,7 @@ fn distribute(
     key_owners: &[usize], // N-long vector with indices = key_id and values = party_id
     A: &[PolyCommitment],
     B: &Vec<Vec<PublicNonce>>,
-) -> (u128, PubKeyMap) {
+) -> u128 {
     // each party broadcasts their commitments
     // these will need to be serialized in tuples w/ the value encrypted
     let mut broadcast_shares = Vec::new();
@@ -49,13 +48,11 @@ fn distribute(
         broadcast_shares.push(parties[party_id].get_shares());
     }
 
-    let mut public_keys = HashMap::new();
     let mut total_compute_secret_time = 0;
     for party_id in 0..parties.len() {
         let party_shares = filter_party_shares(party_id, &key_owners, &broadcast_shares);
         let compute_secret_start = time::Instant::now();
-        let pks = parties[party_id].compute_secret(party_shares, &A);
-        public_keys.extend(pks);
+        parties[party_id].compute_secret(party_shares, &A);
 
         let compute_secret_time = compute_secret_start.elapsed();
         total_compute_secret_time += compute_secret_time.as_micros();
@@ -66,7 +63,7 @@ fn distribute(
         parties[i].set_group_nonces(B.clone());
     }
 
-    (total_compute_secret_time, public_keys)
+    total_compute_secret_time
 }
 
 #[allow(non_snake_case)]
@@ -182,9 +179,9 @@ fn main() {
         .iter_mut()
         .map(|p| p.gen_nonces(num_nonces, &mut rng))
         .collect();
-    let (total_compute_secret_time, public_keys) = distribute(&mut parties, &key_owners, &A, &B);
+    let total_compute_secret_time = distribute(&mut parties, &key_owners, &A, &B);
 
-    let mut sig_agg = SignatureAggregator::new(num_keys, num_parties, threshold, A, B, public_keys);
+    let mut sig_agg = SignatureAggregator::new(num_keys, num_parties, threshold, A, B);
 
     let mut total_sig_time = 0;
     let mut total_party_sig_time = 0;
@@ -204,7 +201,7 @@ fn main() {
         total_sig_time += sig_time.as_micros();
 
         println!("Signature (R,z) = \n({},{})", sig.R, sig.z);
-        assert!(sig.verify(&sig_agg.group_key, &msg));
+        assert!(sig.verify(&sig_agg.get_group_public_key(), &msg));
 
         // this resets one party's nonces assuming it went down and needed to regenerate
         if sig_ct == 3 {

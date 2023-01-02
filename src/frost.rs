@@ -217,7 +217,7 @@ impl Party {
         &mut self,
         shares: HashMap<usize, Vec<(usize, Scalar)>>,
         A: &[PolyCommitment],
-    ) -> &PubKeyMap {
+    ) {
         // TODO: return error with a list of missing shares
         assert!(shares.len() == self.key_ids.len());
 
@@ -247,8 +247,6 @@ impl Party {
                 self.party_id, key_id, self.private_keys[&key_id]
             );
         }
-
-        &self.public_keys
     }
 
     #[allow(non_snake_case)]
@@ -291,8 +289,8 @@ pub struct SignatureAggregator {
     pub threshold: usize,
     pub A: Vec<PolyCommitment>, // outer vector is N-long, inner vector is T-long
     pub B: Vec<Vec<PublicNonce>>, // outer vector is N-long, inner vector is T-long
-    pub group_key: Point,       // the group's combined public key
-    pub public_keys: PubKeyMap, // the public key for each point
+    //pub group_key: Point,       // the group's combined public key
+    public_keys: PubKeyMap, // the public key for each point
     nonce_ctr: usize,
     num_nonces: usize,
 }
@@ -305,18 +303,30 @@ impl SignatureAggregator {
         threshold: usize,
         A: Vec<PolyCommitment>,
         B: Vec<Vec<PublicNonce>>,
-        public_keys: PubKeyMap,
+        //public_keys: PubKeyMap,
     ) -> Self {
         assert!(A.len() == num_parties);
         for A_i in &A {
             assert!(A_i.verify());
         }
 
-        let mut key = Point::new(); // TODO: Compute pub key from A
-        for A_i in &A {
-            key += &A_i.A[0];
+        let mut pubkey = HashMap::new();
+        for i in 0..(num_keys + 1) {
+            pubkey.insert(i, Point::new());
         }
-        println!("SA groupKey {}", key);
+        for A_i in &A {
+            for i in 0..(num_keys + 1) {
+                pubkey.insert(
+                    i,
+                    pubkey[&i]
+                        + (0..A_i.A.len()).fold(Point::zero(), |s, j| {
+                            s + (Scalar::from((i) as u32) ^ j) * A_i.A[j]
+                        }),
+                );
+            }
+        }
+
+        println!("SA groupKey {}", pubkey[&0]);
 
         assert!(B.len() == num_parties);
         let num_nonces = B[0].len();
@@ -330,8 +340,8 @@ impl SignatureAggregator {
             threshold: threshold,
             A: A,
             B: B,
-            group_key: key,
-            public_keys: public_keys,
+            //group_key: key,
+            public_keys: pubkey,
             nonce_ctr: 0,
             num_nonces: num_nonces,
         }
@@ -347,7 +357,7 @@ impl SignatureAggregator {
         let (_B, Ris, R) = compute_intermediate_values(&signers, &self.B, self.nonce_ctr, &msg);
 
         let mut z = Scalar::zero();
-        let c = compute_challenge(&self.group_key, &R, &msg); // only needed for checking z_i
+        let c = compute_challenge(&self.public_keys[&0], &R, &msg); // only needed for checking z_i
         for sig in sig_shares {
             assert!(
                 sig.z_i * G
@@ -356,19 +366,22 @@ impl SignatureAggregator {
                             .iter()
                             .fold(Point::zero(), |p, k| p + lambda(&k, signers)
                                 * c
-                                * self.public_keys[&k])
+                                * self.public_keys[&(k + 1)])
             );
             z += sig.z_i;
         }
         self.update_nonce();
 
         let sig = Signature { R: R, z: z };
-        assert!(sig.verify(&self.group_key, msg));
+        assert!(sig.verify(&self.public_keys[&0], msg));
         sig
     }
 
     pub fn get_nonce_ctr(&self) -> usize {
         self.nonce_ctr
+    }
+    pub fn get_group_public_key(&self) -> Point {
+        self.public_keys[&0]
     }
 
     fn update_nonce(&mut self) {
